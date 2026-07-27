@@ -1,0 +1,8 @@
+
+DATA QUALITY SUMMARY
+---------------------
+Total datasets loaded: 2
+Fund master records: 40
+NAV history records: 46000
+AMFI codes unmatched (master->nav): 0
+AMFI codes unmatched (nav->master): 0
