@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+
+data/raw/*.csv
+!data/raw/fund_master.csv
+!data/raw/nav_history.csv
+
+data/processed/*.csv
+
+.ipynb_checkpoints/
