@@ -1,4 +1,4 @@
-"""
+git status"""
 Day 1: Data Ingestion
 Loads all provided CSV datasets, inspects them, validates AMFI codes.
 """
