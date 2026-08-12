@@ -1,8 +1,5 @@
 from pathlib import Path
 import pandas as pd
-import numpy as np
-import logging
-import sys
 
 
 # ============================================================
@@ -11,633 +8,159 @@ import sys
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 
-METRICS_DIR = (
-    BASE_DIR
-    / "outputs"
-    / "performance_metrics"
+PROCESSED_DIR = (
+    BASE_DIR /
+    "data" /
+    "processed"
 )
 
-OUTPUT_DIR = (
-    BASE_DIR
-    / "outputs"
-    / "recommendations"
-)
-
-OUTPUT_DIR.mkdir(
-    parents=True,
-    exist_ok=True
+SCORECARD_FILE = (
+    PROCESSED_DIR /
+    "fund_scorecard.csv"
 )
 
 
 # ============================================================
-# SETTINGS
+# LOAD SCORECARD
 # ============================================================
 
-# Default investor risk profile
-DEFAULT_RISK_PROFILE = "moderate"
+def load_scorecard():
+    """Load the fund scorecard."""
 
-
-# ============================================================
-# LOGGING
-# ============================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-
-logger = logging.getLogger(__name__)
-
-
-# ============================================================
-# LOAD METRICS
-# ============================================================
-
-def load_metrics():
-    """Load calculated fund performance metrics."""
-
-    metrics_file = (
-        METRICS_DIR
-        / "performance_metrics.csv"
-    )
-
-    if not metrics_file.exists():
-
+    if not SCORECARD_FILE.exists():
         raise FileNotFoundError(
-            f"Performance metrics file not found: "
-            f"{metrics_file}"
+            f"Scorecard not found: {SCORECARD_FILE}"
         )
 
-    df = pd.read_csv(
-        metrics_file
+    return pd.read_csv(
+        SCORECARD_FILE
     )
 
-    if df.empty:
-
-        raise ValueError(
-            "Performance metrics file is empty."
-        )
-
-    logger.info(
-        f"Loaded {len(df):,} funds."
-    )
-
-    return df
-
 
 # ============================================================
-# CLEAN METRICS
+# FUND RECOMMENDER
 # ============================================================
 
-def clean_metrics(df):
-    """Clean metrics required by recommender."""
-
-    df = df.copy()
-
-    required_columns = [
-        "amfi_code",
-        "cagr_1y_pct",
-        "cagr_3y_pct",
-        "sharpe_ratio",
-        "annualized_volatility_pct",
-        "beta_nifty50",
-        "historical_var_95_pct",
-        "max_drawdown_pct"
-    ]
-
-    missing_columns = [
-        col
-        for col in required_columns
-        if col not in df.columns
-    ]
-
-    if missing_columns:
-
-        raise ValueError(
-            "Missing required columns: "
-            f"{missing_columns}"
-        )
-
-    # --------------------------------------------------------
-    # Convert numeric columns
-    # --------------------------------------------------------
-
-    numeric_columns = [
-        "cagr_1y_pct",
-        "cagr_3y_pct",
-        "sharpe_ratio",
-        "annualized_volatility_pct",
-        "beta_nifty50",
-        "historical_var_95_pct",
-        "max_drawdown_pct"
-    ]
-
-    for col in numeric_columns:
-
-        df[col] = pd.to_numeric(
-            df[col],
-            errors="coerce"
-        )
-
-    # --------------------------------------------------------
-    # Remove invalid funds
-    # --------------------------------------------------------
-
-    df = df.dropna(
-        subset=[
-            "cagr_3y_pct",
-            "sharpe_ratio",
-            "annualized_volatility_pct",
-            "max_drawdown_pct"
-        ]
-    )
-
-    return df
-
-
-# ============================================================
-# NORMALIZATION
-# ============================================================
-
-def min_max_score(series, higher_is_better=True):
+def recommend_funds(
+    risk_appetite,
+    top_n=3
+):
     """
-    Convert values to a 0-100 score.
+    Return top funds by Sharpe Ratio
+    within the selected risk grade.
 
-    Higher value = better if higher_is_better=True.
+    Parameters
+    ----------
+    risk_appetite : str
+        Low, Moderate or High.
+
+    top_n : int
+        Number of funds to recommend.
+
+    Returns
+    -------
+    pandas.DataFrame
     """
 
-    series = series.copy()
+    scorecard = load_scorecard()
 
-    min_value = series.min()
-    max_value = series.max()
-
-    if pd.isna(min_value) or pd.isna(max_value):
-
-        return pd.Series(
-            50,
-            index=series.index
-        )
-
-    if max_value == min_value:
-
-        return pd.Series(
-            50,
-            index=series.index
-        )
-
-    score = (
-        (series - min_value)
-        / (max_value - min_value)
-        * 100
-    )
-
-    if not higher_is_better:
-
-        score = 100 - score
-
-    return score
-
-
-# ============================================================
-# CALCULATE COMPONENT SCORES
-# ============================================================
-
-def calculate_component_scores(df):
-    """Calculate individual fund quality scores."""
-
-    df = df.copy()
-
-    # --------------------------------------------------------
-    # Return score
-    # --------------------------------------------------------
-
-    df["return_score"] = min_max_score(
-        df["cagr_3y_pct"],
-        higher_is_better=True
-    )
-
-    # --------------------------------------------------------
-    # Sharpe score
-    # --------------------------------------------------------
-
-    df["sharpe_score"] = min_max_score(
-        df["sharpe_ratio"],
-        higher_is_better=True
-    )
-
-    # --------------------------------------------------------
-    # Volatility score
-    # Lower volatility = better
-    # --------------------------------------------------------
-
-    df["volatility_score"] = min_max_score(
-        df["annualized_volatility_pct"],
-        higher_is_better=False
-    )
-
-    # --------------------------------------------------------
-    # Drawdown score
-    #
-    # Example:
-    # -10% is better than -30%
-    #
-    # Higher value is better.
-    # --------------------------------------------------------
-
-    df["drawdown_score"] = min_max_score(
-        df["max_drawdown_pct"],
-        higher_is_better=True
-    )
-
-    # --------------------------------------------------------
-    # Beta score
-    #
-    # Beta close to 1 is treated as preferable.
-    # --------------------------------------------------------
-
-    beta_distance = (
-        df["beta_nifty50"] - 1
-    ).abs()
-
-    df["beta_score"] = min_max_score(
-        beta_distance,
-        higher_is_better=False
-    )
-
-    return df
-
-
-# ============================================================
-# RISK PROFILE WEIGHTS
-# ============================================================
-
-def get_weights(risk_profile):
-    """Return scoring weights for investor risk profile."""
-
-    risk_profile = (
-        risk_profile
-        .lower()
+    risk_appetite = (
+        str(risk_appetite)
         .strip()
+        .title()
     )
 
-    if risk_profile == "conservative":
+    valid_risks = [
+        "Low",
+        "Moderate",
+        "High"
+    ]
 
-        return {
-            "return": 0.15,
-            "sharpe": 0.30,
-            "volatility": 0.25,
-            "drawdown": 0.25,
-            "beta": 0.05
-        }
-
-    if risk_profile == "moderate":
-
-        return {
-            "return": 0.25,
-            "sharpe": 0.25,
-            "volatility": 0.20,
-            "drawdown": 0.20,
-            "beta": 0.10
-        }
-
-    if risk_profile == "aggressive":
-
-        return {
-            "return": 0.40,
-            "sharpe": 0.20,
-            "volatility": 0.10,
-            "drawdown": 0.10,
-            "beta": 0.20
-        }
-
-    raise ValueError(
-        "Invalid risk profile. "
-        "Use conservative, moderate, or aggressive."
-    )
-
-
-# ============================================================
-# CALCULATE FINAL SCORE
-# ============================================================
-
-def calculate_final_score(
-    df,
-    risk_profile
-):
-    """Calculate weighted recommendation score."""
-
-    df = df.copy()
-
-    weights = get_weights(
-        risk_profile
-    )
-
-    df["recommendation_score"] = (
-        df["return_score"]
-        * weights["return"]
-
-        + df["sharpe_score"]
-        * weights["sharpe"]
-
-        + df["volatility_score"]
-        * weights["volatility"]
-
-        + df["drawdown_score"]
-        * weights["drawdown"]
-
-        + df["beta_score"]
-        * weights["beta"]
-    )
-
-    return df
-
-
-# ============================================================
-# ASSIGN RECOMMENDATION
-# ============================================================
-
-def assign_recommendation(score):
-    """Convert numerical score into recommendation label."""
-
-    if score >= 80:
-
-        return "Strong Buy"
-
-    if score >= 65:
-
-        return "Buy"
-
-    if score >= 50:
-
-        return "Hold"
-
-    if score >= 35:
-
-        return "Watch"
-
-    return "Avoid"
-
-
-# ============================================================
-# GENERATE RECOMMENDATIONS
-# ============================================================
-
-def generate_recommendations(
-    df,
-    risk_profile
-):
-    """Generate ranked fund recommendations."""
-
-    df = calculate_component_scores(
-        df
-    )
-
-    df = calculate_final_score(
-        df,
-        risk_profile
-    )
-
-    df["recommendation"] = (
-        df["recommendation_score"]
-        .apply(
-            assign_recommendation
+    if risk_appetite not in valid_risks:
+        raise ValueError(
+            "Risk appetite must be "
+            "'Low', 'Moderate' or 'High'."
         )
+
+    filtered = scorecard[
+        scorecard["risk_grade"] ==
+        risk_appetite
+    ].copy()
+
+    if filtered.empty:
+        return pd.DataFrame()
+
+    filtered["sharpe_ratio"] = pd.to_numeric(
+        filtered["sharpe_ratio"],
+        errors="coerce"
     )
 
-    # --------------------------------------------------------
-    # Rank funds
-    # --------------------------------------------------------
-
-    df = df.sort_values(
-        "recommendation_score",
-        ascending=False
-    ).reset_index(
-        drop=True
+    recommendations = (
+        filtered
+        .dropna(
+            subset=["sharpe_ratio"]
+        )
+        .sort_values(
+            "sharpe_ratio",
+            ascending=False
+        )
+        .head(top_n)
+        .copy()
     )
 
-    df["rank"] = (
-        df.index + 1
-    )
-
-    # --------------------------------------------------------
-    # Add risk profile
-    # --------------------------------------------------------
-
-    df["risk_profile"] = (
-        risk_profile
-    )
-
-    return df
-
-
-# ============================================================
-# SAVE RESULTS
-# ============================================================
-
-def save_recommendations(df):
-    """Save recommendation results."""
-
-    output_file = (
-        OUTPUT_DIR
-        / "fund_recommendations.csv"
-    )
-
-    columns = [
+    recommendations.insert(
+        0,
         "rank",
-        "amfi_code",
-        "risk_profile",
-        "recommendation_score",
-        "recommendation",
-        "cagr_1y_pct",
-        "cagr_3y_pct",
-        "sharpe_ratio",
-        "annualized_volatility_pct",
-        "beta_nifty50",
-        "historical_var_95_pct",
-        "max_drawdown_pct"
-    ]
-
-    output = df[
-        [
-            col
-            for col in columns
-            if col in df.columns
-        ]
-    ]
-
-    output.to_csv(
-        output_file,
-        index=False
+        range(
+            1,
+            len(recommendations) + 1
+        )
     )
 
-    logger.info(
-        f"Saved recommendations: "
-        f"{output_file}"
-    )
+    recommendations[
+        "recommendation"
+    ] = "Recommended"
 
-    return output_file
+    return recommendations
 
 
 # ============================================================
-# SAVE TOP 5
-# ============================================================
-
-def save_top_five(df):
-    """Save top five recommendations."""
-
-    top_five = df.head(5)
-
-    output_file = (
-        OUTPUT_DIR
-        / "top_5_funds.csv"
-    )
-
-    top_five.to_csv(
-        output_file,
-        index=False
-    )
-
-    logger.info(
-        f"Saved top 5 funds: "
-        f"{output_file}"
-    )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-    """Run fund recommendation engine."""
-
-    logger.info(
-        "================================================"
-    )
-
-    logger.info(
-        "STARTING FUND RECOMMENDER"
-    )
-
-    logger.info(
-        "================================================"
-    )
-
-    try:
-
-        # ----------------------------------------------------
-        # Risk profile
-        # ----------------------------------------------------
-
-        risk_profile = (
-            sys.argv[1]
-            if len(sys.argv) > 1
-            else DEFAULT_RISK_PROFILE
-        )
-
-        risk_profile = (
-            risk_profile
-            .lower()
-            .strip()
-        )
-
-        logger.info(
-            f"Risk profile: {risk_profile}"
-        )
-
-        # Validate risk profile
-        get_weights(
-            risk_profile
-        )
-
-        # ----------------------------------------------------
-        # Load data
-        # ----------------------------------------------------
-
-        df = load_metrics()
-
-        # ----------------------------------------------------
-        # Clean
-        # ----------------------------------------------------
-
-        df = clean_metrics(
-            df
-        )
-
-        # ----------------------------------------------------
-        # Generate recommendations
-        # ----------------------------------------------------
-
-        recommendations = (
-            generate_recommendations(
-                df,
-                risk_profile
-            )
-        )
-
-        if recommendations.empty:
-
-            raise ValueError(
-                "No recommendations generated."
-            )
-
-        # ----------------------------------------------------
-        # Save
-        # ----------------------------------------------------
-
-        save_recommendations(
-            recommendations
-        )
-
-        save_top_five(
-            recommendations
-        )
-
-        # ----------------------------------------------------
-        # Display top 5
-        # ----------------------------------------------------
-
-        print(
-            "\nTOP 5 RECOMMENDED FUNDS"
-        )
-
-        print(
-            "=============================================="
-        )
-
-        print(
-            recommendations[
-                [
-                    "rank",
-                    "amfi_code",
-                    "recommendation_score",
-                    "recommendation"
-                ]
-            ].head(5).to_string(
-                index=False
-            )
-        )
-
-        print(
-            "=============================================="
-        )
-
-        logger.info(
-            "FUND RECOMMENDER COMPLETED SUCCESSFULLY"
-        )
-
-    except Exception as exc:
-
-        logger.exception(
-            f"Fund recommender failed: {exc}"
-        )
-
-        sys.exit(1)
-
-
-# ============================================================
-# SCRIPT ENTRY POINT
+# COMMAND LINE INTERFACE
 # ============================================================
 
 if __name__ == "__main__":
-    main()
-    
+
+    print("=" * 60)
+    print("BLUESTOCK MUTUAL FUND RECOMMENDER")
+    print("=" * 60)
+
+    risk = input(
+        "\nEnter risk appetite "
+        "(Low / Moderate / High): "
+    )
+
+    result = recommend_funds(
+        risk
+    )
+
+    if result.empty:
+
+        print(
+            "\nNo matching funds found."
+        )
+
+    else:
+
+        print(
+            f"\nTop {len(result)} "
+            f"recommendations for "
+            f"{risk.title()} risk:"
+        )
+
+        print()
+
+        print(
+            result.to_string(
+                index=False
+            )
+        )
